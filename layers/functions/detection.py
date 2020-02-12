@@ -37,6 +37,19 @@ class Detect(Function):
         conf_preds = conf_data.view(num, num_priors,
                                     self.num_classes).transpose(2, 1)
 
+        for localization, confidence in zip(loc_data, conf_data):
+            decoded_boxes = decode(localization, prior_data, self.variance)
+
+            for class_idx, confidence_per_class in enumerate(confidence):
+                class_idx += 1
+                mask = torch.nonzero(confidence_per_class > self.conf_thresh).squeeze()
+                scores = confidence_per_class[mask]
+                if scores.size(0) == 0:
+                    continue
+
+                boxes = decoded_boxes[mask].reshape(-1, 4)
+                
+
         # Decode predictions into bboxes.
         for i in range(num):
             decoded_boxes = decode(loc_data[i], prior_data, self.variance)
