@@ -408,7 +408,7 @@ class SSDAugmentation(object):
             Expand(self.mean),
             RandomSampleCrop(),
             RandomMirror(),
-            ToPercentCoords(),
+            # ToPercentCoords(),
             Resize(self.size),
             SubtractMeans(self.mean)
         ])

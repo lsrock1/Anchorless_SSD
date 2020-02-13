@@ -1,7 +1,9 @@
 import torchvision
-import torchvision.ops.nms as nms
+from torchvision.ops import nms
 from torch import nn
 import torch
+import math
+import torch.nn.functional as F
 
 from collections import namedtuple
 
@@ -17,18 +19,19 @@ class Scale(nn.Module):
 
 class AnchorLessHead(nn.Module):
     def __init__(self, in_channels, cfg):
+        super().__init__()
         self.tower = []
-        self.num_classes = cfg.num_classes
+        self.num_classes = cfg['num_classes']
         for i in range(3):
             self.tower.append(
                 nn.Sequential(
-                    nn.Conv2d(in_channels, in_channels, 3, 1),
+                    nn.Conv2d(in_channels, in_channels, 3, padding=1),
                     nn.BatchNorm2d(in_channels),
                     nn.ReLU(True)))
         self.tower = nn.Sequential(*self.tower)
-        self.scales = nn.ModuleList([Scale(init_value=1.0) for _ in range(5)])
+        self.scales = nn.ModuleList([Scale(init_value=1.0) for _ in range(6)])
         self.cls_logits = nn.Conv2d(
-            in_channels, num_classes, kernel_size=3, stride=1,
+            in_channels, self.num_classes, kernel_size=3, stride=1,
             padding=1
         )
         self.bbox_pred = nn.Conv2d(
@@ -48,13 +51,14 @@ class AnchorLessHead(nn.Module):
         logits = []
         bbox_reg = []
         centerness = []
+
         for l, feature in enumerate(x):
             feature = self.tower(feature)
 
             logits.append(self.cls_logits(feature))
             centerness.append(self.centerness(feature))
 
-            bbox_pred = self.scales[l](self.bbox_pred(box_tower))
+            bbox_pred = self.scales[l](self.bbox_pred(feature))
             bbox_reg.append(torch.exp(bbox_pred))
         return logits, bbox_reg, centerness
 
@@ -83,7 +87,7 @@ class FPN(nn.Module):
             if in_channels == 0:
                 continue
             inner_block_module = nn.Conv2d(in_channels, out_channels, 1)
-            layer_block_module = nn.Conv2d(out_channels, out_channels, 3, 1)
+            layer_block_module = nn.Conv2d(out_channels, out_channels, 3, padding=1)
             self.add_module(inner_block, inner_block_module)
             self.add_module(layer_block, layer_block_module)
             self.inner_blocks.append(inner_block)
@@ -114,23 +118,17 @@ class FPN(nn.Module):
             last_inner = inner_lateral + inner_top_down
             results.insert(0, getattr(self, layer_block)(last_inner))
 
-        if isinstance(self.top_blocks, LastLevelP6P7):
-            last_results = self.top_blocks(x[-1], results[-1])
-            results.extend(last_results)
-        elif isinstance(self.top_blocks, LastLevelMaxPool):
-            last_results = self.top_blocks(results[-1])
-            results.extend(last_results)
-
         return tuple(results)
 
 
 def build_vgg():
-    vgg = torchvision.models.vgg16_bn(True, True)
+    vgg = torchvision.models.vgg16_bn(True, True).features
 
     return nn.ModuleList([
-        vgg[:23],
+        vgg[:30],
         nn.Sequential(
-            vgg[23:],
+            vgg[30:-1],
+            nn.MaxPool2d(kernel_size=3, padding=1, stride=1),
             nn.Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6), nn.ReLU(inplace=True),
             nn.Conv2d(1024, 1024, kernel_size=1), nn.ReLU(inplace=True))
     ])
@@ -157,11 +155,28 @@ def build_extras():
     return extras
 
 
+class SSD(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.vgg = build_vgg()
+        self.extras = build_extras()
+        self.fpn = FPN([512, 1024, 512, 256, 256, 256], 256)
+        self.head = AnchorLessHead(256, cfg)
+
+    def forward(self, x):
+        
+        results = []
+        for layer in self.vgg:
+            x = layer(x)
+            results.append(x)
+        
+        for layer in self.extras:
+            x = layer(x)
+            results.append(x)
+
+        results = self.head(self.fpn(results))
+
+        return results
+
 def build_ssd(cfg):
-    ssd = nn.ModuleList([
-        build_vgg(),
-        build_extras(),
-        FPN([256, 1024, 512, 256, 256, 256], 256),
-        AnchorLessHead(256, cfg)
-    ])
-    return ssd
+    return SSD(cfg)

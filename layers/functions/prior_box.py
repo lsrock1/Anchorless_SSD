@@ -2,6 +2,7 @@ from __future__ import division
 from math import sqrt as sqrt
 from itertools import product as product
 import torch
+from torch import nn
 
 
 class BufferList(nn.Module):
@@ -37,7 +38,7 @@ class PriorBox(nn.Module):
 
     def __init__(self, cfg):
         super(PriorBox, self).__init__()
-        self.variance = cfg.VARIANCE or [0.1]    
+        self.variance = cfg['variance'] or [0.1]    
         self.clip = cfg.CLIP
 
         for v in self.variance:

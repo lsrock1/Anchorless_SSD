@@ -5,6 +5,10 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from data import coco as cfg
 from ..box_utils import match, log_sum_exp
+from fvcore.nn import sigmoid_focal_loss_jit
+
+
+INF = 100000000
 
 
 class IOULoss(nn.Module):
@@ -81,23 +85,28 @@ class MultiBoxLoss(nn.Module):
         See: https://arxiv.org/pdf/1512.02325.pdf for more details.
     """
 
-    def __init__(self, num_classes, overlap_thresh, prior_for_matching,
+    def __init__(self, num_classes, overlap_thresh,
                  neg_mining, neg_pos, neg_overlap,
                  use_gpu=True):
         super(MultiBoxLoss, self).__init__()
         self.use_gpu = use_gpu
         self.num_classes = num_classes
         self.threshold = overlap_thresh
-        self.use_prior_for_matching = prior_for_matching
+        # self.use_prior_for_matching = prior_for_matching
         self.do_neg_mining = neg_mining
         self.negpos_ratio = neg_pos
         self.neg_overlap = neg_overlap
         self.variance = cfg['variance']
-        self.iou_loss = IOULoss()
+        # self.iou_loss = IOULoss()
         min_sizes = cfg['min_sizes'] #: [30, 60, 111, 162, 213, 264],
+        min_sizes[0] = -1
         max_sizes = cfg['max_sizes'] #: [60, 111, 162, 213, 264, 315],
         max_sizes[-1] = 9999999
         self.object_sizes_of_interest = list(zip(min_sizes, max_sizes))
+        self.fpn_strides = [8, 17, 33, 60, 100, 300]
+        # self.cls_loss_func = 
+        self.box_reg_loss_func = IOULoss()
+        self.centerness_loss_func = nn.BCEWithLogitsLoss(reduction="sum")
 
     def compute_locations(self, features):
         locations = []
@@ -128,6 +137,7 @@ class MultiBoxLoss(nn.Module):
     def match(self, locations, targets, object_sizes_of_interest):
         labels = []
         reg_targets = []
+
         xs, ys = locations[:, 0], locations[:, 1]
 
         for im_i in range(len(targets)):
@@ -168,6 +178,13 @@ class MultiBoxLoss(nn.Module):
             reg_targets.append(reg_targets_per_im)
 
         return labels, reg_targets
+    
+    def compute_centerness_targets(self, reg_targets):
+        left_right = reg_targets[:, [0, 2]]
+        top_bottom = reg_targets[:, [1, 3]]
+        centerness = (left_right.min(dim=-1)[0] / left_right.max(dim=-1)[0]) * \
+                      (top_bottom.min(dim=-1)[0] / top_bottom.max(dim=-1)[0])
+        return torch.sqrt(centerness)
 
     def forward(self, predictions, targets):
         """Multibox Loss
@@ -181,13 +198,14 @@ class MultiBoxLoss(nn.Module):
             targets (tensor): Ground truth boxes and labels for a batch,
                 shape: [batch_size,num_objs,5] (last idx is the label).
         """
-        loc_data, conf_data = predictions
-        points = self.compute_locations(loc_data)
+        box_cls, box_regression, centerness = predictions
+        # print(box_cls[0].shape)
+        points = self.compute_locations(box_regression)
 
         expanded_object_sizes_of_interest = []
         for l, points_per_level in enumerate(points):
             object_sizes_of_interest_per_level = \
-                points_per_level.new_tensor(object_sizes_of_interest[l])
+                points_per_level.new_tensor(self.object_sizes_of_interest[l])
             expanded_object_sizes_of_interest.append(
                 object_sizes_of_interest_per_level[None].expand(len(points_per_level), -1)
             )
@@ -197,8 +215,104 @@ class MultiBoxLoss(nn.Module):
         self.num_points_per_level = num_points_per_level
         points_all_level = torch.cat(points, dim=0)
 
-        labels, reg_targets = self.match(points, targets, expanded_object_sizes_of_interest)
+        labels, reg_targets = self.match(points_all_level, targets, expanded_object_sizes_of_interest)
+        for i in range(len(labels)):
+            labels[i] = torch.split(labels[i], num_points_per_level, dim=0)
+            reg_targets[i] = torch.split(reg_targets[i], num_points_per_level, dim=0)
 
+        labels_level_first = []
+        reg_targets_level_first = []
+        for level in range(len(points)):
+            labels_level_first.append(
+                torch.cat([labels_per_im[level] for labels_per_im in labels], dim=0)
+            )
+
+            reg_targets_per_level = torch.cat([
+                reg_targets_per_im[level]
+                for reg_targets_per_im in reg_targets
+            ], dim=0)
+
+            # if self.norm_reg_targets:
+            #     reg_targets_per_level = reg_targets_per_level / self.fpn_strides[level]
+            reg_targets_level_first.append(reg_targets_per_level)
+        
+        labels, reg_targets = labels_level_first, reg_targets_level_first
+
+        box_cls_flatten = []
+        box_regression_flatten = []
+        centerness_flatten = []
+        labels_flatten = []
+        reg_targets_flatten = []
+        for l in range(len(labels)):
+            box_cls_flatten.append(box_cls[l].permute(0, 2, 3, 1).reshape(-1, self.num_classes))
+            box_regression_flatten.append(box_regression[l].permute(0, 2, 3, 1).reshape(-1, 4))
+            labels_flatten.append(labels[l].reshape(-1))
+            reg_targets_flatten.append(reg_targets[l].reshape(-1, 4))
+            centerness_flatten.append(centerness[l].reshape(-1))
+
+        box_cls_flatten = torch.cat(box_cls_flatten, dim=0)
+        box_regression_flatten = torch.cat(box_regression_flatten, dim=0)
+        centerness_flatten = torch.cat(centerness_flatten, dim=0)
+        labels_flatten = torch.cat(labels_flatten, dim=0)
+        reg_targets_flatten = torch.cat(reg_targets_flatten, dim=0)
+
+        pos_inds = torch.nonzero(labels_flatten > 0).squeeze(1)
+
+        box_regression_flatten = box_regression_flatten[pos_inds]
+        reg_targets_flatten = reg_targets_flatten[pos_inds]
+        centerness_flatten = centerness_flatten[pos_inds]
+
+        num_pos_per_gpu = pos_inds.numel()
+        # num_gpus = get_num_gpus()
+        # if num_gpus > 1:
+        #     # sync num_pos from all gpus
+        #     total_num_pos = reduce_sum(pos_inds.new_tensor([num_pos_per_gpu])).item()
+        # else:
+        total_num_pos = num_pos_per_gpu
+
+        # cls_loss = self.cls_loss_func(
+        #     box_cls_flatten,
+        #     labels_flatten.int()
+        # ) / total_num_pos #max(total_num_pos / float(num_gpus), 1.0)
+        # print(labels_flatten[pos_inds])
+        class_target = torch.zeros_like(box_cls_flatten)
+        class_target[pos_inds, labels_flatten[pos_inds].long()] = 1
+
+        # class_target = torch.zeros_like(logits_pred)
+        # class_target[pos_inds, labels[pos_inds]] = 1
+
+        cls_loss = sigmoid_focal_loss_jit(
+            box_cls_flatten,
+            class_target,
+            alpha=0.25,# focal_loss_alpha,
+            gamma=2.0,# focal_loss_gamma,
+            reduction="sum",) / total_num_pos
+        
+        if pos_inds.numel() > 0:
+            centerness_targets = self.compute_centerness_targets(reg_targets_flatten)
+
+            sum_centerness_targets = centerness_targets.sum()
+            # if num_gpus > 1:
+            #     # sync sum_centerness_targets from all gpus
+            #     sum_centerness_targets = reduce_sum(sum_centerness_targets).item()
+            # else:
+            sum_centerness_targets = sum_centerness_targets.item()
+
+            reg_loss = self.box_reg_loss_func(
+                box_regression_flatten,
+                reg_targets_flatten,
+                centerness_targets
+            ) / sum_centerness_targets
+            centerness_loss = self.centerness_loss_func(
+                centerness_flatten,
+                centerness_targets
+            ) / total_num_pos
+        else:
+            reg_loss = box_regression_flatten.sum()
+            reduce_sum(centerness_flatten.new_tensor([0.0]))
+            centerness_loss = centerness_flatten.sum()
+
+        return cls_loss, reg_loss, centerness_loss
         # # match priors (default boxes) and ground truth boxes
         # loc_t = torch.Tensor(num, num_priors, 4)
         # conf_t = torch.LongTensor(num, num_priors)
