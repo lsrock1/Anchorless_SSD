@@ -1,10 +1,6 @@
-import torchvision
-from torch import nn
 import torch
-import math
+from torch import nn
 import torch.nn.functional as F
-
-import model.head import head
 
 
 class FPN(nn.Module):
@@ -21,7 +17,7 @@ class FPN(nn.Module):
                 will be fed
             out_channels (int): number of channels of the FPN representation
         """
-        super().__init__()
+        super(FPN, self).__init__()
         self.inner_blocks = []
         self.layer_blocks = []
         for idx, in_channels in enumerate(in_channels_list, 1):
@@ -63,64 +59,3 @@ class FPN(nn.Module):
             results.insert(0, getattr(self, layer_block)(last_inner))
 
         return tuple(results)
-
-
-def build_vgg():
-    vgg = torchvision.models.vgg16_bn(True, True).features
-
-    return nn.ModuleList([
-        vgg[:30],
-        nn.Sequential(
-            vgg[30:-1],
-            nn.MaxPool2d(kernel_size=3, padding=1, stride=1),
-            nn.Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6), nn.ReLU(inplace=True),
-            nn.Conv2d(1024, 1024, kernel_size=1), nn.ReLU(inplace=True))
-    ])
-
-
-def build_extras():
-    specs = [
-        {'in_channels': 1024, 'out_channels': 512, 'hidden_channels': 256, 'stride': 2},
-        {'in_channels': 512, 'out_channels': 256, 'hidden_channels': 128, 'stride': 2},
-        {'in_channels': 256, 'out_channels': 256, 'hidden_channels': 128, 'stride': 1},
-        {'in_channels': 256, 'out_channels': 256, 'hidden_channels': 128, 'stride': 1}
-    ]
-    extras = []
-    for spec in specs:
-        extras.append(
-            nn.Sequential(
-                nn.Conv2d(spec['in_channels'], spec['hidden_channels'], kernel_size=1), nn.ReLU(True),
-                nn.Conv2d(
-                    spec['hidden_channels'],
-                    spec['out_channels'],
-                    kernel_size=3, stride=spec['stride'], padding=spec['stride']-1), nn.ReLU(True)
-            ))
-    extras = nn.ModuleList(extras)
-    return extras
-
-
-class SSD(nn.Module):
-    def __init__(self, cfg):
-        super().__init__()
-        self.vgg = build_vgg()
-        self.extras = build_extras()
-        self.fpn = FPN([512, 1024, 512, 256, 256, 256], 256)
-        self.head = build_head(cfg)
-
-    def forward(self, x):
-        
-        results = []
-        for layer in self.vgg:
-            x = layer(x)
-            results.append(x)
-        
-        for layer in self.extras:
-            x = layer(x)
-            results.append(x)
-
-        results = self.head(self.fpn(results))
-
-        return results
-
-def build_ssd(cfg):
-    return SSD(cfg)

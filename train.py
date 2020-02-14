@@ -172,43 +172,46 @@ def train():
             adjust_learning_rate(optimizer, args.gamma, step_index)
 
         # load train data
-        for images, targets in batch_iterator:
-            # images, targets = next(batch_iterator)
+        try:
+            images, targets = next(batch_iterator)
+        except StopIteration:
+            batch_iterator=iter(data_loader)
+            images, targets = next(batch_iterator)
 
-            if args.cuda:
-                images = images.cuda()
-                targets = [ann.cuda() for ann in targets]
-            # else:
-                # images = Variable(images)
-                # targets = [ann for ann in targets]
-            # forward
-            t0 = time.time()
-            out = net(images)
-            # backprop
-            optimizer.zero_grad()
-            loss_l, loss_c, loss_m = criterion(out, targets)
-            loss = loss_l + loss_c + loss_m
-            loss.backward()
-            optimizer.step()
-            t1 = time.time()
-            m_loss += loss_m.item()
-            loc_loss += loss_l.item()
-            conf_loss += loss_c.item()
+        if args.cuda:
+            images = images.cuda()
+            targets = [ann.cuda() for ann in targets]
+        # else:
+            # images = Variable(images)
+            # targets = [ann for ann in targets]
+        # forward
+        t0 = time.time()
+        out = net(images)
+        # backprop
+        optimizer.zero_grad()
+        loss_l, loss_c, loss_m = criterion(out, targets)
+        loss = loss_l + loss_c + loss_m
+        loss.backward()
+        optimizer.step()
+        t1 = time.time()
+        m_loss += loss_m.item()
+        loc_loss += loss_l.item()
+        conf_loss += loss_c.item()
 
-            if iteration % 10 == 0:
-                print('timer: %.4f sec.' % (t1 - t0))
-                print('iter ' + repr(iteration) + ' || Loss: %.4f ||' % (loss.item()), end=' ')
+        if iteration % 10 == 0:
+            print('timer: %.4f sec.' % (t1 - t0))
+            print('iter ' + repr(iteration) + ' || Loss: %.4f ||' % (loss.item()), end=' ')
 
-            if args.visdom:
-                update_vis_plot(iteration, loss_l.item(), loss_c.item(),
-                                iter_plot, epoch_plot, 'append')
+        if args.visdom:
+            update_vis_plot(iteration, loss_l.item(), loss_c.item(),
+                            iter_plot, epoch_plot, 'append')
 
-            if iteration != 0 and iteration % 5000 == 0:
-                print('Saving state, iter:', iteration)
-                torch.save(ssd_net.state_dict(), 'weights/ssd300_COCO_' +
-                        repr(iteration) + '.pth')
-        torch.save(ssd_net.state_dict(),
-                args.save_folder + '' + args.dataset + '.pth')
+        if iteration != 0 and iteration % 5000 == 0:
+            print('Saving state, iter:', iteration)
+            torch.save(ssd_net.state_dict(), 'weights/ssd300_COCO_' +
+                       repr(iteration) + '.pth')
+    torch.save(ssd_net.state_dict(),
+               args.save_folder + '' + args.dataset + '.pth')
 
 
 def adjust_learning_rate(optimizer, gamma, step):

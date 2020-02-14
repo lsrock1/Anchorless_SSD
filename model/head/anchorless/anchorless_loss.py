@@ -1,10 +1,6 @@
-# -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
-from data import coco as cfg
-from ..box_utils import match, log_sum_exp
 from fvcore.nn import sigmoid_focal_loss_jit
 
 
@@ -62,77 +58,19 @@ class IOULoss(nn.Module):
         else:
             return losses.sum()
 
-class MultiBoxLoss(nn.Module):
-    """SSD Weighted Loss Function
-    Compute Targets:
-        1) Produce Confidence Target Indices by matching  ground truth boxes
-           with (default) 'priorboxes' that have jaccard index > threshold parameter
-           (default threshold: 0.5).
-        2) Produce localization target by 'encoding' variance into offsets of ground
-           truth boxes and their matched  'priorboxes'.
-        3) Hard negative mining to filter the excessive number of negative examples
-           that comes with using a large number of default bounding boxes.
-           (default negative:positive ratio 3:1)
-    Objective Loss:
-        L(x,c,l,g) = (Lconf(x, c) + αLloc(x,l,g)) / N
-        Where, Lconf is the CrossEntropy Loss and Lloc is the SmoothL1 Loss
-        weighted by α which is set to 1 by cross val.
-        Args:
-            c: class confidences,
-            l: predicted boxes,
-            g: ground truth boxes
-            N: number of matched default boxes
-        See: https://arxiv.org/pdf/1512.02325.pdf for more details.
-    """
+class AnchorlessLoss(nn.Module):
 
-    def __init__(self, num_classes, overlap_thresh,
-                 neg_mining, neg_pos, neg_overlap,
-                 use_gpu=True):
+    def __init__(self, cfg):
         super(MultiBoxLoss, self).__init__()
-        self.use_gpu = use_gpu
-        self.num_classes = num_classes
-        self.threshold = overlap_thresh
-        # self.use_prior_for_matching = prior_for_matching
-        self.do_neg_mining = neg_mining
-        self.negpos_ratio = neg_pos
-        self.neg_overlap = neg_overlap
-        self.variance = cfg['variance']
-        # self.iou_loss = IOULoss()
-        min_sizes = cfg['min_sizes'] #: [30, 60, 111, 162, 213, 264],
+        self.num_classes = cfg.NUM_CLASSES
+        min_sizes = cfg.MIN_SIZES #: [30, 60, 111, 162, 213, 264],
         min_sizes[0] = -1
-        max_sizes = cfg['max_sizes'] #: [60, 111, 162, 213, 264, 315],
-        max_sizes[-1] = 9999999
+        max_sizes = cfg.MAX_SIZES #: [60, 111, 162, 213, 264, 315],
+        max_sizes[-1] = INF
         self.object_sizes_of_interest = list(zip(min_sizes, max_sizes))
-        self.fpn_strides = [8, 17, 33, 60, 100, 300]
-        # self.cls_loss_func = 
+        self.fpn_strides = cfg.STRIDES #[8, 17, 33, 60, 100, 300]
         self.box_reg_loss_func = IOULoss()
         self.centerness_loss_func = nn.BCEWithLogitsLoss(reduction="sum")
-
-    def compute_locations(self, features):
-        locations = []
-        for level, feature in enumerate(features):
-            h, w = feature.size()[-2:]
-            locations_per_level = self.compute_locations_per_level(
-                h, w, self.fpn_strides[level],
-                feature.device
-            )
-            locations.append(locations_per_level)
-        return locations
-
-    def compute_locations_per_level(self, h, w, stride, device):
-        shifts_x = torch.arange(
-            0, w * stride, step=stride,
-            dtype=torch.float32, device=device
-        )
-        shifts_y = torch.arange(
-            0, h * stride, step=stride,
-            dtype=torch.float32, device=device
-        )
-        shift_y, shift_x = torch.meshgrid(shifts_y, shifts_x)
-        shift_x = shift_x.reshape(-1)
-        shift_y = shift_y.reshape(-1)
-        locations = torch.stack((shift_x, shift_y), dim=1) + stride // 2
-        return locations
 
     def match(self, locations, targets, object_sizes_of_interest):
         labels = []
@@ -198,9 +136,7 @@ class MultiBoxLoss(nn.Module):
             targets (tensor): Ground truth boxes and labels for a batch,
                 shape: [batch_size,num_objs,5] (last idx is the label).
         """
-        box_cls, box_regression, centerness = predictions
-        # print(box_cls[0].shape)
-        points = self.compute_locations(box_regression)
+        box_cls, box_regression, centerness, points = predictions
 
         expanded_object_sizes_of_interest = []
         for l, points_per_level in enumerate(points):
