@@ -13,7 +13,7 @@ _C.NUM_CLASSES = 21
 _C.LR_STEPS = (80000, 100000, 120000,)
 _C.MAX_ITER = 120000
 _C.MIN_DIM = 300
-_C.STRIDES = (8, 16, 32, 64, 100, 300,)
+_C.STRIDES = (8, 16, 32, 60, 100, 300,)
 _C.MIN_SIZES = (30, 60, 111, 162, 213, 264,)
 _C.MAX_SIZES = (60, 111, 162, 213, 264, 315,)
 
@@ -36,6 +36,18 @@ _C.ANCHOR.VARIANCE = (0.1, 0.2,)
 _C.ANCHOR.CLIP = True
 _C.ANCHOR.OVERLAP_THRESH = 0.5
 _C.ANCHOR.INFERENCE_TH = 0.01
+
+
+# ===== Backbone =====
+# ====================
+_C.BACKBONE_TYPE = 'vgg'
+_C.FPN_ON = True
+
+
+# ===== FPN =====
+# ===============
+_C.FPN = CN()
+_C.FPN.OUT_CHANNELS = 256
 
 # ===== TEST =====
 # ================

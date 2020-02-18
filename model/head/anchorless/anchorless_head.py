@@ -2,6 +2,7 @@ from torch import nn
 import torch
 import math
 
+from .anchorless_loss import AnchorLessLoss
 from .anchorless_inference import make_anchorless_postprocessor
 
 
@@ -36,17 +37,19 @@ class AnchorLessHead(nn.Module):
         self.tower = nn.Sequential(*self.tower)
         self.scales = nn.ModuleList([Scale(init_value=1.0) for _ in range(6)])
         self.cls_logits = nn.Conv2d(
-            in_channels, self.num_classes, kernel_size=3, stride=1,
+            out_channels, self.num_classes, kernel_size=3, stride=1,
             padding=1
         )
         self.bbox_pred = nn.Conv2d(
-            in_channels, 4, kernel_size=3, stride=1,
+            out_channels, 4, kernel_size=3, stride=1,
             padding=1
         )
         self.centerness = nn.Conv2d(
-            in_channels, 1, kernel_size=3, stride=1,
+            out_channels, 1, kernel_size=3, stride=1,
             padding=1
         )
+        self.fpn_strides = cfg.STRIDES
+        self.loss = AnchorLessLoss(cfg)
 
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
@@ -56,10 +59,12 @@ class AnchorLessHead(nn.Module):
         locations = []
         for level, feature in enumerate(features):
             h, w = feature.size()[-2:]
+            # print(f'h {h}, w {w}')
             locations_per_level = self.compute_locations_per_level(
                 h, w, self.fpn_strides[level],
                 feature.device
             )
+            # print(locations_per_level)
             locations.append(locations_per_level)
         return locations
 
@@ -78,10 +83,14 @@ class AnchorLessHead(nn.Module):
         locations = torch.stack((shift_x, shift_y), dim=1) + stride // 2
         return locations
 
-    def forward(self, x, image_sizes=None):
+    def forward(self, x, targets=None):
         logits = []
         bbox_reg = []
         centerness = []
+        device_id = x[0].device
+        bs = x[0].shape[0]
+        targets = targets[device_id.index * bs : (device_id.index+1) * bs]
+        # targets = targets[x.device_id:]
 
         for l, feature in enumerate(x):
             feature = self.tower(feature)
@@ -91,9 +100,9 @@ class AnchorLessHead(nn.Module):
 
             bbox_pred = self.scales[l](self.bbox_pred(feature))
             bbox_reg.append(torch.exp(bbox_pred))
-        
+
         locations = self.compute_locations(bbox_reg)
 
         if not self.training:
-            return self.postprocessor(locations, box_cls, box_regression, centerness, image_sizes)
-        return logits, bbox_reg, centerness, locations
+            return self.postprocessor(locations, box_cls, box_regression, centerness)
+        return self.loss([logits, bbox_reg, centerness, locations], targets)

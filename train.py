@@ -1,12 +1,12 @@
 from data import *
 from utils.augmentations import SSDAugmentation
-from layers.modules import MultiBoxLoss
 from model.ssd import build_ssd
+from config.defaults import _C as cfg
+
 import os
 import sys
 import time
 import torch
-from torch.autograd import Variable
 import torch.nn as nn
 import torch.optim as optim
 import torch.backends.cudnn as cudnn
@@ -76,16 +76,16 @@ def train():
             print("WARNING: Using default COCO dataset_root because " +
                   "--dataset_root was not specified.")
             args.dataset_root = COCO_ROOT
-        cfg = coco
+        # cfg = coco
         dataset = COCODetection(root=args.dataset_root,
-                                transform=SSDAugmentation(cfg['min_dim'],
+                                transform=SSDAugmentation(cfg.MIN_DIM,
                                                           MEANS))
     elif args.dataset == 'VOC':
         if args.dataset_root == COCO_ROOT:
             parser.error('Must specify dataset if specifying dataset_root')
-        cfg = voc
+        # cfg = voc
         dataset = VOCDetection(root=args.dataset_root,
-                               transform=SSDAugmentation(cfg['min_dim'],
+                               transform=SSDAugmentation(cfg.MIN_DIM,
                                                          MEANS))
 
     if args.visdom:
@@ -119,16 +119,6 @@ def train():
 
     optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
                           weight_decay=args.weight_decay)
-    criterion = MultiBoxLoss(
-                    num_classes=cfg['num_classes'],
-                    overlap_thresh=0.5,
-                    # prior_for_matching=True,
-                    # bkg_label=0,
-                    neg_mining=True,
-                    neg_pos=3,
-                    neg_overlap=0.5,
-                    # encode_target=False,
-                    use_gpu=args.cuda)
 
     net.train()
     # loss counters
@@ -157,7 +147,7 @@ def train():
                                   pin_memory=True)
     # create batch iterator
     batch_iterator = iter(data_loader)
-    for iteration in range(args.start_iter, cfg['max_iter']):
+    for iteration in range(args.start_iter, cfg.MAX_ITER):
         if args.visdom and iteration != 0 and (iteration % epoch_size == 0):
             update_vis_plot(epoch, loc_loss, conf_loss, epoch_plot, None,
                             'append', epoch_size)
@@ -167,7 +157,7 @@ def train():
             m_loss = 0
             epoch += 1
 
-        if iteration in cfg['lr_steps']:
+        if iteration in cfg.LR_STEPS:
             step_index += 1
             adjust_learning_rate(optimizer, args.gamma, step_index)
 
@@ -186,17 +176,19 @@ def train():
             # targets = [ann for ann in targets]
         # forward
         t0 = time.time()
-        out = net(images)
+        losses = net(images, targets)
+
         # backprop
         optimizer.zero_grad()
-        loss_l, loss_c, loss_m = criterion(out, targets)
-        loss = loss_l + loss_c + loss_m
+        # loss_l, loss_c, loss_m = criterion(out, targets)
+        print(losses)
+        loss = sum(losses)
         loss.backward()
         optimizer.step()
         t1 = time.time()
-        m_loss += loss_m.item()
-        loc_loss += loss_l.item()
-        conf_loss += loss_c.item()
+        # m_loss += loss_m.item()
+        # loc_loss += loss_l.item()
+        # conf_loss += loss_c.item()
 
         if iteration % 10 == 0:
             print('timer: %.4f sec.' % (t1 - t0))

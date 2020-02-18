@@ -34,12 +34,11 @@ class PostProcessor(torch.nn.Module):
         self.fpn_post_nms_top_n = fpn_post_nms_top_n
         self.min_size = min_size
         self.num_classes = num_classes
-        self.bbox_aug_enabled = bbox_aug_enabled
+        # self.bbox_aug_enabled = bbox_aug_enabled
 
     def forward_for_single_feature_map(
             self, locations, box_cls,
-            box_regression, centerness,
-            image_sizes):
+            box_regression, centerness):
         """
         Arguments:
             anchors: list[BoxList]
@@ -103,7 +102,7 @@ class PostProcessor(torch.nn.Module):
 
         return results
 
-    def forward(self, locations, box_cls, box_regression, centerness, image_sizes):
+    def forward(self, locations, box_cls, box_regression, centerness):
         """
         Arguments:
             anchors: list[list[BoxList]]
@@ -118,7 +117,7 @@ class PostProcessor(torch.nn.Module):
         for _, (l, o, b, c) in enumerate(zip(locations, box_cls, box_regression, centerness)):
             sampled_boxes.append(
                 self.forward_for_single_feature_map(
-                    l, o, b, c, image_sizes
+                    l, o, b, c
                 )
             )
 

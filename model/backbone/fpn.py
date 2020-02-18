@@ -32,6 +32,7 @@ class FPN(nn.Module):
             self.add_module(layer_block, layer_block_module)
             self.inner_blocks.append(inner_block)
             self.layer_blocks.append(layer_block)
+        self.out_channels = [out_channels for _ in range(len(self.inner_blocks))]
 
     def forward(self, x):
         """

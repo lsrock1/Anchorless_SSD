@@ -58,14 +58,14 @@ class IOULoss(nn.Module):
         else:
             return losses.sum()
 
-class AnchorlessLoss(nn.Module):
+class AnchorLessLoss(nn.Module):
 
     def __init__(self, cfg):
-        super(MultiBoxLoss, self).__init__()
+        super().__init__()
         self.num_classes = cfg.NUM_CLASSES
-        min_sizes = cfg.MIN_SIZES #: [30, 60, 111, 162, 213, 264],
+        min_sizes = list(cfg.MIN_SIZES) #: [30, 60, 111, 162, 213, 264],
         min_sizes[0] = -1
-        max_sizes = cfg.MAX_SIZES #: [60, 111, 162, 213, 264, 315],
+        max_sizes = list(cfg.MAX_SIZES) #: [60, 111, 162, 213, 264, 315],
         max_sizes[-1] = INF
         self.object_sizes_of_interest = list(zip(min_sizes, max_sizes))
         self.fpn_strides = cfg.STRIDES #[8, 17, 33, 60, 100, 300]
@@ -137,7 +137,7 @@ class AnchorlessLoss(nn.Module):
                 shape: [batch_size,num_objs,5] (last idx is the label).
         """
         box_cls, box_regression, centerness, points = predictions
-
+        
         expanded_object_sizes_of_interest = []
         for l, points_per_level in enumerate(points):
             object_sizes_of_interest_per_level = \
@@ -152,6 +152,7 @@ class AnchorlessLoss(nn.Module):
         points_all_level = torch.cat(points, dim=0)
 
         labels, reg_targets = self.match(points_all_level, targets, expanded_object_sizes_of_interest)
+        # print(reg_targets.shape)
         for i in range(len(labels)):
             labels[i] = torch.split(labels[i], num_points_per_level, dim=0)
             reg_targets[i] = torch.split(reg_targets[i], num_points_per_level, dim=0)
@@ -191,32 +192,24 @@ class AnchorlessLoss(nn.Module):
         centerness_flatten = torch.cat(centerness_flatten, dim=0)
         labels_flatten = torch.cat(labels_flatten, dim=0)
         reg_targets_flatten = torch.cat(reg_targets_flatten, dim=0)
-
+        
         pos_inds = torch.nonzero(labels_flatten > 0).squeeze(1)
-
         box_regression_flatten = box_regression_flatten[pos_inds]
         reg_targets_flatten = reg_targets_flatten[pos_inds]
         centerness_flatten = centerness_flatten[pos_inds]
-
         num_pos_per_gpu = pos_inds.numel()
         # num_gpus = get_num_gpus()
         # if num_gpus > 1:
         #     # sync num_pos from all gpus
         #     total_num_pos = reduce_sum(pos_inds.new_tensor([num_pos_per_gpu])).item()
         # else:
+        
         total_num_pos = num_pos_per_gpu
 
-        # cls_loss = self.cls_loss_func(
-        #     box_cls_flatten,
-        #     labels_flatten.int()
-        # ) / total_num_pos #max(total_num_pos / float(num_gpus), 1.0)
-        # print(labels_flatten[pos_inds])
         class_target = torch.zeros_like(box_cls_flatten)
         class_target[pos_inds, labels_flatten[pos_inds].long()] = 1
-
-        # class_target = torch.zeros_like(logits_pred)
-        # class_target[pos_inds, labels[pos_inds]] = 1
-
+        # print(box_cls_flatten)
+        # return
         cls_loss = sigmoid_focal_loss_jit(
             box_cls_flatten,
             class_target,
@@ -245,7 +238,7 @@ class AnchorlessLoss(nn.Module):
             ) / total_num_pos
         else:
             reg_loss = box_regression_flatten.sum()
-            reduce_sum(centerness_flatten.new_tensor([0.0]))
+            centerness_flatten.new_tensor([0.0])
             centerness_loss = centerness_flatten.sum()
 
         return cls_loss, reg_loss, centerness_loss

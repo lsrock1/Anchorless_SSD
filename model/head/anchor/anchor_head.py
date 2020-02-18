@@ -3,6 +3,7 @@ import torch
 from torch import nn
 
 from .anchor_inference import make_anchor_postprocessor
+from .anchor_loss import AnchorLoss
 
 
 class BufferList(nn.Module):
@@ -108,6 +109,7 @@ class AnchorHead(nn.Module):
     def __init__(self, cfg, out_channels):
         # default anchor 2 + anchor ratio * 2
         num_boxes = [len(ratio) * 2 + 2 for ratio in cfg.ANCHOR.RATIOS]
+        self.image_size = torch.tensor([cfg.MIN_DIM, cfg.MIN_DIM, cfg.MIN_DIM, cfg.MIN_DIM])
         self.loc_layers = []
         self.conf_layers = []
         self.num_classes = cfg.NUM_CLASSES
@@ -120,15 +122,16 @@ class AnchorHead(nn.Module):
         self.conf_layers = nn.ModuleList(self.confidences)
         self.anchor_box = AnchorBox(cfg)
         self.postprocessor = make_anchor_postprocessor(cfg)
+        self.loss = AnchorLoss(cfg)
 
-    def forward(self, x, image_size):
+    def forward(self, x, targets=None):
         localizations = []
         confidences = []
         for idx, source in enumerate(x):
             localizations.append(self.loc_layers[idx](source))
             confidences.append(self.conf_layers[idx](source))
 
-        anchors = self.anchor_box(confidences, image_size)
+        anchors = self.anchor_box(confidences, self.image_size)
 
         localizations = [l.permute(0, 2, 3, 1).contiguous() for l in localizations]
         confidences   = [c.permute(0, 2, 3, 1).contiguous() for c in confidences]
@@ -141,4 +144,4 @@ class AnchorHead(nn.Module):
 
         if not self.training:
             return self.postprocessor(localizations, confidences, anchors)
-        return localizations, confidences, anchors
+        return self.loss([localizations, confidences, anchors], targets)
