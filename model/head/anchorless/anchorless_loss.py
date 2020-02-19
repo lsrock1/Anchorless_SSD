@@ -80,7 +80,9 @@ class AnchorLessLoss(nn.Module):
 
         for im_i in range(len(targets)):
             targets_per_im = targets[im_i]
+            # print(targets_per_im)
             bboxes = targets_per_im[:, :4]
+            # print(bboxes)
             labels_per_im = targets_per_im[:, 4] # .get_field("labels")
             hw = bboxes[:, 2:] - bboxes[:, :2]
             area = hw[:, 0] * hw[:, 1]
@@ -137,7 +139,7 @@ class AnchorLessLoss(nn.Module):
                 shape: [batch_size,num_objs,5] (last idx is the label).
         """
         box_cls, box_regression, centerness, points = predictions
-        
+        # print(targets)
         expanded_object_sizes_of_interest = []
         for l, points_per_level in enumerate(points):
             object_sizes_of_interest_per_level = \
@@ -198,6 +200,7 @@ class AnchorLessLoss(nn.Module):
         reg_targets_flatten = reg_targets_flatten[pos_inds]
         centerness_flatten = centerness_flatten[pos_inds]
         num_pos_per_gpu = pos_inds.numel()
+        # print(reg_targets_flatten)
         # num_gpus = get_num_gpus()
         # if num_gpus > 1:
         #     # sync num_pos from all gpus

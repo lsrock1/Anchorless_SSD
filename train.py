@@ -181,7 +181,7 @@ def train():
         # backprop
         optimizer.zero_grad()
         # loss_l, loss_c, loss_m = criterion(out, targets)
-        print(losses)
+        # print(losses)
         loss = sum(losses)
         loss.backward()
         optimizer.step()
